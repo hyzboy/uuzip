@@ -1,13 +1,64 @@
 #include<hgl/log/LogInfo.h>
 #include<hgl/CodePage.h>
 #include<hgl/filesystem/FileSystem.h>
-#include<hgl/io/FileInputStream.h>
+#include<hgl/io/FileOutputStream.h>
 #include<hgl/type/MemBlock.h>
 #include<stdio.h>
 #include<zip.h>
 
 using namespace hgl;
 using namespace hgl::io;
+
+constexpr size_t TEMP_BUF_SIZE=HGL_SIZE_1MB;
+char temp_buffer[TEMP_BUF_SIZE];
+    
+bool UnzipFile(const OSString &filename,zip_file_t *zf,const int filesize)
+{
+    int fs=0;
+    int size;
+
+    FileOutputStream fos;
+                        
+    if(!fos.CreateTrunc(filename))
+    {
+        LOG_ERROR(OS_TEXT("Create file failed,filename: ")+filename);
+        zip_fclose(zf);
+        return(false);
+    }
+
+    while(fs<filesize)
+    {
+        size=zip_fread(zf,temp_buffer,TEMP_BUF_SIZE);
+
+        if(size<0)
+        {
+            LOG_ERROR(OS_TEXT("read file failed at zip"));
+            break;
+        }
+
+        if(fos.WriteFully(temp_buffer,size)!=size)
+        {
+            LOG_ERROR(OS_TEXT("write file failed at ")+OSString::valueOf(fs));
+            break;
+        }
+
+        fs+=size;
+    }
+    
+    fos.Close();
+    zip_fclose(zf);
+
+    if(fs==filesize)
+    {
+        return(true);
+    }
+    else
+    {
+        filesystem::FileDelete(filename);
+        LOG_ERROR("Uncompress failed.");
+        return(false);
+    }
+}
 
 int os_main(int argc,os_char **argv)
 {
@@ -32,11 +83,33 @@ int os_main(int argc,os_char **argv)
         return 0;
     }
 
-    const OSString charset_name=argv[1];
-    const OSString zip_filename=argv[2];
+    logger::InitLogger(OS_TEXT("UUZip"));
 
-    os_out<<OS_TEXT("zip file: ")<<argv[2]<<std::endl;
-    os_out<<OS_TEXT("char set: ")<<argv[1]<<std::endl;
+    OSString output_directory;
+
+    if(argc>3)
+    {
+        if(argv[3][0]=='.'
+         &&argv[3][1]==0)
+            filesystem::GetCurrentPath(output_directory);
+        else
+        {
+            output_directory=argv[3];
+        }
+    }
+    else
+    {
+        filesystem::GetCurrentPath(output_directory);
+    }
+
+    LOG_INFO(OS_TEXT("zip file: ")+OSString(argv[2]));
+    LOG_INFO(OS_TEXT("output directory: ")+output_directory);
+
+    if(!filesystem::IsDirectory(output_directory))
+    {
+        LOG_ERROR("output directory error!");
+        return 1;
+    }
     
     zip_error zerr;
     zip_error_init(&zerr);
@@ -59,25 +132,28 @@ int os_main(int argc,os_char **argv)
 
         if(!hgl::stou(argv[1],cp))
         {
-            std::wcerr<<L"error codepage: "<<argv[1]<<std::endl;
+            LOG_ERROR(OS_TEXT("error codepage: ")+OSString(argv[1]));
             return -1;
         }
 
         cs.codepage=cp;
 
-        os_out<<OS_TEXT("use codepage: ")<<cs.codepage<<std::endl;
+        LOG_INFO(OS_TEXT("use codepage: ")+OSString::valueOf(cs.codepage));
     }
     else
     {
-        os_out<<OS_TEXT("use charsets: ")<<argv[1]<<std::endl;
+        LOG_ERROR(OS_TEXT("use charset: ")+OSString(argv[1]));
 
         strcpy(cs.charset,to_u8(argv[1]));
         cs.codepage=FindCodePage(cs.charset);
     }
 
-    MemBlock<u16char> filename(256);
+    MemBlock<u16char> filename(1024);
+    u16char last_char;
+    OSString os_filename;
+    OSString full_filename;
     int len=0;
-    int u16len=256;
+    int u16len=filename.GetMaxLength();
 
     if(zs)
     {
@@ -94,7 +170,39 @@ int os_main(int argc,os_char **argv)
                     
                 to_utf16(cs,filename,filename.GetMaxLength(),sb.name,len);
 
-                os_out<<i<<OS_TEXT(": ")<<filename.data()<<OS_TEXT(", size: ")<<sb.size<<std::endl;
+                last_char=filename[u16len-1];
+                
+                os_filename=OSString(filename);
+                full_filename=filesystem::MergeFilename(output_directory,os_filename);
+                    
+                if(sb.size==0
+                   &&(last_char=='/'
+                    ||last_char=='\\'))
+                {
+                    LOG_INFO(OS_TEXT("Path: ")+os_filename);
+                    
+                    if(!filesystem::IsDirectory(full_filename))
+                    if(!filesystem::MakePath(full_filename))
+                    {
+                        LOG_ERROR(OS_TEXT("make path error: ")+full_filename);
+                        return 1;
+                    }
+                }
+                else
+                {   
+                    LOG_INFO(OSString::valueOf(i)+OS_TEXT(": ")+os_filename+OS_TEXT(", size: ")+OSString::valueOf(sb.size));
+
+                    zip_file_t *zf=zip_fopen_index(za,i,0);
+
+                    if(!zf)
+                    {
+                        LOG_ERROR(OS_TEXT("open file failed at zip,filename: ")+os_filename);
+                    }
+                    else
+                    {
+                        UnzipFile(full_filename,zf,sb.size);
+                    }
+                }
             }
         }
 
