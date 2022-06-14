@@ -11,4 +11,4 @@ use_cm_module(Platform)
 find_package(libzip CONFIG REQUIRED)
 
 add_executable(uuzip uuzip.cpp)
-target_link_libraries(uuzip PRIVATE libzip::zip CMCore CMPlatform)
+target_link_libraries(uuzip PRIVATE CMCore CMPlatform libzip::zip)
